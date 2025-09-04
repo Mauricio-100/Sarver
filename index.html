@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>GamerHubX - Socket Test</title>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+</head>
+<body style="background:#111;color:#0f0;font-family:sans-serif;text-align:center;padding:40px">
+  <h1>🎮 GamerHubX Online</h1>
+  <input id="pseudo" placeholder="Entrez votre pseudo" />
+  <button onclick="register()">Rejoindre</button>
+  <p id="status"></p>
+
+  <script>
+    const socket = io("https://gamerhubx-server.onrender.com");
+
+    function register() {
+      const pseudo = document.getElementById("pseudo").value;
+      socket.emit("register", pseudo);
+    }
+
+    socket.on("registered", (msg) => {
+      document.getElementById("status").innerText = msg;
+    });
+
+    socket.on("move", (data) => {
+      console.log("Autre joueur a bougé :", data);
+    });
+  </script>
+</body>
+</html>
