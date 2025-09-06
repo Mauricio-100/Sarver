@@ -1,18 +1,18 @@
-// server.js
 import express from "express";
+import cors from "cors";
 import fetch from "node-fetch";
 import mysql from "mysql2/promise";
 
 const app = express();
 app.use(express.json());
 
-// ⚠️ Mets ton vrai token HF en variable Render (Dashboard → Environment → HF_TOKEN)
-const HF_TOKEN = process.env.HF_TOKEN;
+// ⚠️ Ajoute ceci pour autoriser ton front
+app.use(cors({ origin: "*" })); // Pour dev, plus tard mettre l'URL exacte
 
-// DSN MySQL (déjà donné par toi)
-const MYSQL_DSN =
-  process.env.MYSQL_DSN ||
-  "mysql://avnadmin:AVNS_BvVULOCxM7CcMQd0Aqw@mysql-1a36101-botwii.c.aivencloud.com:14721/defaultdb?ssl-mode=REQUIRED";
+const HF_TOKEN = process.env.HF_TOKEN ||;
+const MYSQL_DSN = process.env.MYSQL_DSN || "mysql://avnadmin:AVNS_BvVULOCxM7CcMQd0Aqw@mysql-1a36101-botwii.c.aivencloud.com:14721/defaultdb?ssl-mode=REQUIRED";
+
+// ... reste du code server
 
 // Fonction helper pour parser le DSN
 function parseDSN(dsn) {
