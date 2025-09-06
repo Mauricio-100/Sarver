@@ -6,15 +6,12 @@ import mysql from "mysql2/promise";
 const app = express();
 app.use(express.json());
 
-// ⚠️ Ajoute ceci pour autoriser ton front
-app.use(cors({ origin: "*" })); // Pour dev, plus tard mettre l'URL exacte
+// ⚠️ CORS pour front-end
+app.use(cors({ origin: "*" }));
 
 const HF_TOKEN = process.env.HF_TOKEN ||;
 const MYSQL_DSN = process.env.MYSQL_DSN || "mysql://avnadmin:AVNS_BvVULOCxM7CcMQd0Aqw@mysql-1a36101-botwii.c.aivencloud.com:14721/defaultdb?ssl-mode=REQUIRED";
 
-// ... reste du code server
-
-// Fonction helper pour parser le DSN
 function parseDSN(dsn) {
   const url = new URL(dsn);
   return {
@@ -23,35 +20,31 @@ function parseDSN(dsn) {
     user: url.username,
     password: url.password,
     database: url.pathname.replace("/", ""),
-    ssl: { rejectUnauthorized: false },
+    ssl: { rejectUnauthorized: false }
   };
 }
 
-// Endpoint API
 app.post("/api/ask", async (req, res) => {
   const { question } = req.body;
   if (!question) return res.status(400).json({ error: "Missing question" });
 
   try {
+    // 1️⃣ MySQL
     let conn = null;
-
-    // 1. Chercher en MySQL
     try {
       conn = await mysql.createConnection(parseDSN(MYSQL_DSN));
       const [rows] = await conn.query(
         "SELECT answer FROM faq WHERE ? REGEXP question_pattern LIMIT 1",
         [question]
       );
-      if (rows.length > 0) {
-        return res.json({ answer: rows[0].answer });
-      }
+      if (rows.length > 0) return res.json({ answer: rows[0].answer });
     } catch (err) {
-      console.error("MySQL non dispo:", err.message);
+      console.error("MySQL non disponible:", err.message);
     } finally {
       if (conn) await conn.end();
     }
 
-    // 2. Sinon Hugging Face (Mixtral)
+    // 2️⃣ Hugging Face
     const hfResp = await fetch(
       "https://api-inference.huggingface.co/models/mistralai/Mixtral-8x7B-v0.1",
       {
@@ -73,10 +66,7 @@ app.post("/api/ask", async (req, res) => {
     }
 
     const data = await hfResp.json();
-    const answer = Array.isArray(data)
-      ? data[0]?.generated_text
-      : data.generated_text;
-
+    const answer = Array.isArray(data) ? data[0]?.generated_text : data.generated_text;
     res.json({ answer: answer?.trim() || "(pas de réponse)" });
   } catch (err) {
     console.error(err);
@@ -84,6 +74,5 @@ app.post("/api/ask", async (req, res) => {
   }
 });
 
-// Render exige un port dynamique
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ Serveur en ligne sur port ${PORT}`));
+app.listen(PORT, () => console.log(`✅ Serveur en ligne : http://localhost:${PORT}`));
