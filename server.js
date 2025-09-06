@@ -9,7 +9,7 @@ app.use(express.json());
 // ⚠️ CORS pour front-end
 app.use(cors({ origin: "*" }));
 
-const HF_TOKEN = process.env.HF_TOKEN || "hf_xxx_ton_token_ici";
+const HF_TOKEN = process.env.HF_TOKEN || "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";
 const MYSQL_DSN = process.env.MYSQL_DSN || "mysql://avnadmin:AVNS_BvVULOCxM7CcMQd0Aqw@mysql-1a36101-botwii.c.aivencloud.com:14721/defaultdb?ssl-mode=REQUIRED";
 
 function parseDSN(dsn) {
