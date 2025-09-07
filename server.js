@@ -3,7 +3,6 @@ import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
 import cookieParser from "cookie-parser";
-import { v4 as uuidv4 } from "uuid";
 import mysql from "mysql2/promise";
 import dotenv from "dotenv";
 import axios from "axios";
@@ -20,10 +19,7 @@ app.use(cors({
 app.use(bodyParser.json());
 app.use(cookieParser());
 
-// Token Hugging Face
-const HF_TOKEN = process.env.HF_TOKEN;
-
-// Connexion MySQL (pool)
+// Connexion MySQL
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
   port: process.env.DB_PORT || 3306,
@@ -34,7 +30,7 @@ const pool = mysql.createPool({
   connectionLimit: 10
 });
 
-// --- Supprime les anciennes tables ---
+// Supprime les anciennes tables
 async function dropOldTables() {
   const tables = ["user_settings","sessions","memories","chat_stats","subscriptions","logs","friends","users"];
   for (const table of tables) {
@@ -47,7 +43,7 @@ async function dropOldTables() {
   }
 }
 
-// --- Crée toutes les tables ---
+// Crée toutes les tables en évitant les FK incompatibles
 async function ensureTables() {
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS users (
@@ -136,16 +132,13 @@ async function ensureTables() {
   `);
 }
 
-// --- Initialisation ---
 await dropOldTables().catch(console.error);
 await ensureTables().catch(console.error);
 
-// --- Endpoints ---
-
-// Ping DB
+// Endpoint de test DB
 app.get("/api/ping", async (req, res) => {
   try {
-    const [rows] = await pool.query("SELECT 1+1 AS result");
+    const [rows] = await pool.query("SELECT 1 + 1 AS result");
     res.json({ ok: true, db: rows[0].result });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -157,11 +150,8 @@ app.post("/api/register", async (req, res) => {
   const { name, email, password } = req.body;
   if (!name || !email || !password) return res.status(400).json({ ok: false, error: "Champs manquants" });
   try {
-    const [result] = await pool.execute(
-      "INSERT INTO users (name,email,password) VALUES (?,?,?)",
-      [name,email,password]
-    );
-    await pool.execute("INSERT INTO user_settings (user_id) VALUES (?)",[result.insertId]);
+    const [result] = await pool.execute("INSERT INTO users (name, email, password) VALUES (?, ?, ?)", [name, email, password]);
+    await pool.execute("INSERT INTO user_settings (user_id) VALUES (?)", [result.insertId]);
     res.json({ ok: true, userId: result.insertId });
   } catch (err) {
     if (err.code === "ER_DUP_ENTRY") return res.status(409).json({ ok: false, error: "Email déjà utilisé" });
@@ -170,44 +160,39 @@ app.post("/api/register", async (req, res) => {
 });
 
 // Login
-app.post("/api/login", async (req,res)=>{
-  const {email,password}=req.body;
-  if(!email||!password) return res.status(400).json({ok:false,error:"Champs manquants"});
-  try{
-    const [rows]=await pool.execute(
-      "SELECT id,name,plan FROM users WHERE email=? AND password=? LIMIT 1",
-      [email,password]
-    );
-    if(!rows.length) return res.status(401).json({ok:false,error:"Email ou mot de passe incorrect"});
-    res.json({ok:true,user:rows[0]});
-  }catch(err){
-    res.status(500).json({ok:false,error:err.message});
+app.post("/api/login", async (req, res) => {
+  const { email, password } = req.body;
+  if (!email || !password) return res.status(400).json({ ok: false, error: "Champs manquants" });
+  try {
+    const [rows] = await pool.execute("SELECT id, name, plan FROM users WHERE email = ? AND password = ? LIMIT 1", [email, password]);
+    if (!rows.length) return res.status(401).json({ ok: false, error: "Email ou mot de passe incorrect" });
+    const user = rows[0];
+    res.json({ ok: true, user });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// Chat GPT Mistral
-app.post("/api/chat", async (req,res)=>{
-  const {message}=req.body;
-  if(!message) return res.status(400).json({ok:false,error:"Message manquant"});
-  try{
-    const resp=await axios.post(
+// GPT Mistral-7B-Instruct-v0.2 Chat
+app.post("/api/chat", async (req, res) => {
+  const { message } = req.body;
+  if (!message) return res.status(400).json({ ok: false, error: "Message manquant" });
+  try {
+    const resp = await axios.post(
       "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2",
-      {inputs: message},
+      { inputs: message },
       {
-        headers: {
-          Authorization: `Bearer ${HF_TOKEN}`,
-          "Content-Type": "application/json"
-        },
-        timeout: 120000
+        headers: { Authorization: `Bearer ${process.env.HF_TOKEN}` },
+        timeout: 120000 // 2 minutes
       }
     );
-    const aiText=resp.data?.[0]?.generated_text||JSON.stringify(resp.data);
-    res.json({ok:true,response:aiText});
-  }catch(err){
-    console.error(err.response?.data || err.message);
-    res.status(500).json({ok:false,error:"Erreur modèle: "+(err?.message||"unknown")});
+    const aiText = resp.data?.generated_text || JSON.stringify(resp.data);
+    res.json({ ok: true, response: aiText });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: "Erreur modèle: " + (err?.message || "unknown") });
   }
 });
 
-// Démarrage serveur
-app.listen(PORT,()=>console.log(`Mangrat backend prêt et en ligne sur le port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Mangrat backend prêt et en ligne sur le port ${PORT}`);
+});
