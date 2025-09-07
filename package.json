@@ -1,7 +1,7 @@
 {
   "name": "mangrat-backend",
   "version": "1.0.0",
-  "description": "Backend pour Mangrat v4omini - gestion utilisateurs, mémoire, et Hugging Face",
+  "description": "Backend pour Mangrat v4omini - gestion utilisateurs, mémoire, et proxy vers modèle Mixtral",
   "main": "server.js",
   "type": "module",
   "scripts": {
