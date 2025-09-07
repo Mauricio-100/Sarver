@@ -1,5 +1,5 @@
 /**
- * server.js - Backend Mangrat v4omini amélioré
+ * server.js - Backend Mangrat v4omini amélioré (clés FK compatibles)
  * Utilise GPT2 large public Hugging Face
  */
 
@@ -46,12 +46,12 @@ app.get("/api/ping", async (req, res) => {
   }
 });
 
-// Créer toutes les tables nécessaires
+// --- CREATE TABLES ---
 async function ensureTables() {
   // Users
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS users (
-      id BIGINT PRIMARY KEY AUTO_INCREMENT,
+      id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
       name VARCHAR(200),
       email VARCHAR(200) UNIQUE,
       password VARCHAR(200),
@@ -64,7 +64,7 @@ async function ensureTables() {
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS sessions (
       token VARCHAR(64) PRIMARY KEY,
-      user_id BIGINT,
+      user_id BIGINT UNSIGNED,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       expires_at DATETIME,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -74,8 +74,8 @@ async function ensureTables() {
   // Memories
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS memories (
-      id BIGINT PRIMARY KEY AUTO_INCREMENT,
-      user_id BIGINT,
+      id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+      user_id BIGINT UNSIGNED,
       role ENUM('user','ai'),
       content TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -86,7 +86,7 @@ async function ensureTables() {
   // User settings
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS user_settings (
-      user_id BIGINT PRIMARY KEY,
+      user_id BIGINT UNSIGNED PRIMARY KEY,
       theme ENUM('light','dark') DEFAULT 'dark',
       notifications BOOLEAN DEFAULT TRUE,
       language VARCHAR(10) DEFAULT 'fr',
@@ -97,8 +97,8 @@ async function ensureTables() {
   // Chat statistics
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS chat_stats (
-      id BIGINT PRIMARY KEY AUTO_INCREMENT,
-      user_id BIGINT,
+      id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+      user_id BIGINT UNSIGNED,
       messages_sent INT DEFAULT 0,
       messages_received INT DEFAULT 0,
       last_active DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -106,11 +106,11 @@ async function ensureTables() {
     )
   `);
 
-  // Subscriptions / payments (facultatif pour futur paywall)
+  // Subscriptions
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS subscriptions (
-      id BIGINT PRIMARY KEY AUTO_INCREMENT,
-      user_id BIGINT,
+      id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
+      user_id BIGINT UNSIGNED,
       type ENUM('monthly','yearly') DEFAULT 'monthly',
       status ENUM('active','inactive') DEFAULT 'inactive',
       started_at DATETIME,
@@ -119,10 +119,10 @@ async function ensureTables() {
     )
   `);
 
-  // Logs pour audit et erreurs
+  // Logs
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS logs (
-      id BIGINT PRIMARY KEY AUTO_INCREMENT,
+      id BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT,
       type ENUM('error','info','warn') DEFAULT 'info',
       message TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -134,7 +134,7 @@ async function ensureTables() {
 
 ensureTables().catch(console.error);
 
-// --- AUTH REGISTER ---
+// --- REGISTER ---
 app.post("/api/register", async (req, res) => {
   const { name, email, password } = req.body;
   if (!name || !email || !password) return res.status(400).json({ ok: false, error: "Champs manquants" });
@@ -144,7 +144,7 @@ app.post("/api/register", async (req, res) => {
       "INSERT INTO users (name, email, password) VALUES (?, ?, ?)",
       [name, email, password]
     );
-    // créer settings par défaut
+    // settings par défaut
     await pool.execute("INSERT INTO user_settings (user_id) VALUES (?)", [result.insertId]);
     res.json({ ok: true, userId: result.insertId });
   } catch (err) {
@@ -154,7 +154,7 @@ app.post("/api/register", async (req, res) => {
   }
 });
 
-// --- AUTH LOGIN ---
+// --- LOGIN ---
 app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ ok: false, error: "Champs manquants" });
@@ -168,10 +168,10 @@ app.post("/api/login", async (req, res) => {
 
     const user = rows[0];
     const token = uuidv4();
-    const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 7);
+    const expiresAt = new Date(Date.now() + 1000*60*60*24*7);
     await pool.execute("INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)", [token, user.id, expiresAt]);
 
-    res.cookie("mangrat_token", token, { httpOnly: true, maxAge: 1000 * 60 * 60 * 24 * 7 });
+    res.cookie("mangrat_token", token, { httpOnly: true, maxAge: 1000*60*60*24*7 });
     res.json({ ok: true, user: { id: user.id, name: user.name, plan: user.plan }, token });
   } catch (err) {
     console.error(err);
@@ -234,12 +234,10 @@ app.post("/api/upgrade", authMiddleware, async (req, res) => {
 async function pushMemory(userId, role, content) {
   await pool.execute("INSERT INTO memories (user_id, role, content) VALUES (?, ?, ?)", [userId, role, content]);
 }
-
 async function getMemory(userId, limit = 20) {
   const [rows] = await pool.execute("SELECT role, content, created_at FROM memories WHERE user_id = ? ORDER BY id DESC LIMIT ?", [userId, limit]);
   return rows.reverse();
 }
-
 app.post("/api/clear-memory", authMiddleware, async (req, res) => {
   if (!req.user) return res.status(401).json({ ok: false, error: "Non authentifié" });
   try {
@@ -251,7 +249,7 @@ app.post("/api/clear-memory", authMiddleware, async (req, res) => {
   }
 });
 
-// --- CHAT GPT2 PUBLIC ---
+// --- CHAT GPT2 ---
 app.post("/api/chat", authMiddleware, async (req, res) => {
   const { message } = req.body;
   if (!message) return res.status(400).json({ ok: false, error: "Message manquant" });
@@ -276,14 +274,14 @@ app.post("/api/chat", authMiddleware, async (req, res) => {
     if (userId) {
       await pushMemory(userId, "user", message);
       await pushMemory(userId, "ai", aiText);
-      // Mettre à jour stats chat
+
       await pool.execute(`
         INSERT INTO chat_stats (user_id, messages_sent, messages_received)
         VALUES (?, 1, 1)
         ON DUPLICATE KEY UPDATE
-        messages_sent = messages_sent + 1,
-        messages_received = messages_received + 1,
-        last_active = NOW()
+          messages_sent = messages_sent + 1,
+          messages_received = messages_received + 1,
+          last_active = NOW()
       `, [userId]);
     }
 
@@ -295,5 +293,5 @@ app.post("/api/chat", authMiddleware, async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Mangrat backend amélioré en ligne sur port ${PORT}`);
+  console.log(`Mangrat backend amélioré et corrigé en ligne sur port ${PORT}`);
 });
