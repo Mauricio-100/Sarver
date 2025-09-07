@@ -234,7 +234,8 @@ app.post("/api/chat", authMiddleware, async (req, res) => {
 
     // Construire prompt : système + mémoire + user
     const systemPrefix = `Tu es Mangrat v4omini, assistant utile. Réponds en français. Si l'utilisateur est premium, fournis des réponses plus détaillées.`;
-    const prompt = `${systemPrefix}\n\nMémoire:\n${memoryText}\n\nUtilisateur: ${message}\n\nRéponse:`.
+    const prompt = `${systemPrefix}\n\nMémoire:\n${memoryText}\n\nUtilisateur: ${message}\n\nRéponse:`;
+
 
     // Paramètres pour l'inférence - ajuste selon ton serveur
     const genRequest = {
