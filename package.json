@@ -1,7 +1,7 @@
 {
   "name": "mangrat-backend",
   "version": "1.0.0",
-  "description": "Backend pour Mangrat v4omini - gestion utilisateurs, mémoire, et proxy vers modèle Mixtral local",
+  "description": "Backend pour Mangrat v4omini - gestion utilisateurs, mémoire, et Hugging Face",
   "main": "server.js",
   "type": "module",
   "scripts": {
@@ -11,14 +11,14 @@
   "author": "Mauricio",
   "license": "MIT",
   "dependencies": {
-    "cors": "^2.8.5",
-    "express": "^4.18.2",
-    "mysql2": "^3.3.2",
+    "axios": "^1.4.0",
     "body-parser": "^1.20.2",
     "cookie-parser": "^1.4.6",
-    "uuid": "^9.0.0",
+    "cors": "^2.8.5",
     "dotenv": "^16.1.4",
-    "axios": "^1.4.0"
+    "express": "^4.18.2",
+    "mysql2": "^3.3.2",
+    "uuid": "^9.0.0"
   },
   "devDependencies": {
     "nodemon": "^2.0.22"
