@@ -1,4 +1,3 @@
-// server.js
 import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
@@ -31,12 +30,9 @@ const pool = mysql.createPool({
   connectionLimit: 10
 });
 
-// Supprime toutes les anciennes tables
+// Supprime toutes les anciennes tables (sécurisé avec FK)
 async function dropOldTables() {
-  const tables = [
-    "user_settings","sessions","memories","chat_stats",
-    "subscriptions","logs","friends","users"
-  ];
+  const tables = ["user_settings","sessions","memories","chat_stats","subscriptions","logs","friends","users"];
   for (const table of tables) {
     try {
       await pool.execute(`DROP TABLE IF EXISTS ${table}`);
@@ -47,7 +43,7 @@ async function dropOldTables() {
   }
 }
 
-// Crée toutes les tables nécessaires
+// Crée toutes les tables
 async function ensureTables() {
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS users (
@@ -135,14 +131,14 @@ async function ensureTables() {
   `);
 }
 
-// Supprime et recrée les tables
+// Initialisation
 await dropOldTables().catch(console.error);
 await ensureTables().catch(console.error);
 
-// Endpoint test DB
+// Test DB
 app.get("/api/ping", async (req, res) => {
   try {
-    const [rows] = await pool.query("SELECT 1 + 1 AS result");
+    const [rows] = await pool.query("SELECT 1+1 AS result");
     res.json({ ok: true, db: rows[0].result });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -155,8 +151,7 @@ app.post("/api/register", async (req, res) => {
   if (!name || !email || !password) return res.status(400).json({ ok: false, error: "Champs manquants" });
   try {
     const [result] = await pool.execute(
-      "INSERT INTO users (name, email, password) VALUES (?, ?, ?)",
-      [name, email, password]
+      "INSERT INTO users (name, email, password) VALUES (?, ?, ?)", [name, email, password]
     );
     await pool.execute("INSERT INTO user_settings (user_id) VALUES (?)", [result.insertId]);
     res.json({ ok: true, userId: result.insertId });
@@ -172,8 +167,7 @@ app.post("/api/login", async (req, res) => {
   if (!email || !password) return res.status(400).json({ ok: false, error: "Champs manquants" });
   try {
     const [rows] = await pool.execute(
-      "SELECT id, name, plan FROM users WHERE email = ? AND password = ? LIMIT 1",
-      [email, password]
+      "SELECT id, name, plan FROM users WHERE email = ? AND password = ? LIMIT 1", [email, password]
     );
     if (!rows.length) return res.status(401).json({ ok: false, error: "Email ou mot de passe incorrect" });
     const user = rows[0];
@@ -183,32 +177,56 @@ app.post("/api/login", async (req, res) => {
   }
 });
 
-// Chat avec Mistral / Mixtral
+// Chat avec Mistral Mixtral
 app.post("/api/chat", async (req, res) => {
   const { message } = req.body;
   if (!message) return res.status(400).json({ ok: false, error: "Message manquant" });
 
   try {
     const resp = await axios.post(
-      "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2",
+      "https://api-inference.huggingface.co/models/mistralai/Mixtral-8x7B-Instruct-v0.1",
       { inputs: message },
       {
         headers: {
-          Authorization: `Bearer ${process.env.HF_TOKEN}`,
+          "Authorization": `Bearer ${process.env.HF_TOKEN}`,
           "Content-Type": "application/json"
         },
         timeout: 120000
       }
     );
 
-    const aiText = resp.data?.generated_text || JSON.stringify(resp.data);
+    const aiText = resp.data?.[0]?.generated_text || JSON.stringify(resp.data);
     res.json({ ok: true, response: aiText });
+
+    // Optionnel: sauvegarder mémoire
+    // await pool.execute("INSERT INTO memories (user_id, role, content) VALUES (?, 'ai', ?)", [userId, aiText]);
+
   } catch (err) {
-    console.error("Erreur modèle Hugging Face:", err?.message || err);
-    res.status(500).json({ ok: false, error: "Erreur modèle: " + (err?.message || "unknown") });
+    res.status(500).json({ ok: false, error: "Erreur modèle: " + (err.message || "unknown") });
   }
 });
 
+// GET memories
+app.get("/api/memories", async (req, res) => {
+  try {
+    const [rows] = await pool.query("SELECT * FROM memories ORDER BY created_at DESC LIMIT 100");
+    res.json({ ok: true, memories: rows });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET chat_stats
+app.get("/api/chat_stats", async (req, res) => {
+  try {
+    const [rows] = await pool.query("SELECT * FROM chat_stats ORDER BY created_at DESC LIMIT 100");
+    res.json({ ok: true, chat_stats: rows });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Start server
 app.listen(PORT, () => {
   console.log(`Mangrat backend prêt et en ligne sur le port ${PORT}`);
 });
