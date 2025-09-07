@@ -190,7 +190,7 @@ app.post("/api/chat", async (req, res) => {
 
   try {
     const resp = await axios.post(
-      "https://api-inference.huggingface.co/models/mistral/mixtral-7b-instruct-v0.2",
+      "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2",
       { inputs: message },
       {
         headers: {
