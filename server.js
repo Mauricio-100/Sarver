@@ -1,16 +1,6 @@
 /**
  * server.js
- * Backend minimal pour Mangrat v4omini
- *
- * Prérequis :
- * - Node.js 18+ installé
- * - MySQL accessible (utilise la config Aiven fournie)
- * - Un serveur d'inférence local pour Mixtral (ex: text-generation-inference, or custom) accessible en HTTP
- *
- * Usage :
- *  - copier .env.example -> .env et adapter
- *  - npm install
- *  - npm start
+ * Backend minimal pour Mangrat v4omini avec Hugging Face
  */
 
 import express from "express";
@@ -27,7 +17,7 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// CORS - autoriser ton frontend (si tu testes en local)
+// CORS
 app.use(cors({
   origin: process.env.FRONTEND_ORIGIN || "http://localhost:5500",
   credentials: true
@@ -35,7 +25,7 @@ app.use(cors({
 app.use(bodyParser.json());
 app.use(cookieParser());
 
-// Connexion MySQL (pool)
+// MySQL pool
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
   port: process.env.DB_PORT || 3306,
@@ -46,7 +36,7 @@ const pool = mysql.createPool({
   connectionLimit: 10
 });
 
-// Endpoint de test DB
+// Test DB
 app.get("/api/ping", async (req, res) => {
   try {
     const [rows] = await pool.query("SELECT 1 + 1 AS result");
@@ -57,9 +47,7 @@ app.get("/api/ping", async (req, res) => {
   }
 });
 
-/**
- * Helper : create tables if not exists
- */
+// Créer les tables si elles n'existent pas
 async function ensureTables() {
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS users (
@@ -93,13 +81,16 @@ async function ensureTables() {
 }
 ensureTables().catch(console.error);
 
-// Auth simple : register
+// Auth - register
 app.post("/api/register", async (req, res) => {
   const { name, email, password } = req.body;
   if (!name || !email || !password) return res.status(400).json({ ok: false, error: "Champs manquants" });
 
   try {
-    const [result] = await pool.execute("INSERT INTO users (name, email, password) VALUES (?, ?, ?)", [name, email, password]);
+    const [result] = await pool.execute(
+      "INSERT INTO users (name, email, password) VALUES (?, ?, ?)",
+      [name, email, password]
+    );
     res.json({ ok: true, userId: result.insertId });
   } catch (err) {
     if (err.code === "ER_DUP_ENTRY") return res.status(409).json({ ok: false, error: "Email déjà utilisé" });
@@ -108,22 +99,23 @@ app.post("/api/register", async (req, res) => {
   }
 });
 
-// Login -> crée une session (token dans cookie)
+// Login
 app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ ok: false, error: "Champs manquants" });
 
   try {
-    const [rows] = await pool.execute("SELECT id, name, plan FROM users WHERE email = ? AND password = ? LIMIT 1", [email, password]);
+    const [rows] = await pool.execute(
+      "SELECT id, name, plan FROM users WHERE email = ? AND password = ? LIMIT 1",
+      [email, password]
+    );
     if (!rows.length) return res.status(401).json({ ok: false, error: "Email ou mot de passe incorrect" });
 
     const user = rows[0];
-    // créer session
     const token = uuidv4();
     const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 7); // 7 jours
     await pool.execute("INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)", [token, user.id, expiresAt]);
 
-    // cookie httpOnly
     res.cookie("mangrat_token", token, { httpOnly: true, maxAge: 1000 * 60 * 60 * 24 * 7 });
     res.json({ ok: true, user: { id: user.id, name: user.name, plan: user.plan } });
   } catch (err) {
@@ -132,7 +124,7 @@ app.post("/api/login", async (req, res) => {
   }
 });
 
-// Middleware pour récupérer l'utilisateur via cookie
+// Middleware auth
 async function authMiddleware(req, res, next) {
   const token = req.cookies?.mangrat_token || req.headers["x-session-token"];
   if (!token) {
@@ -140,12 +132,12 @@ async function authMiddleware(req, res, next) {
     return next();
   }
   try {
-    const [rows] = await pool.execute("SELECT s.token, s.user_id, u.name, u.email, u.plan FROM sessions s JOIN users u ON s.user_id = u.id WHERE s.token = ? AND (s.expires_at IS NULL OR s.expires_at > NOW()) LIMIT 1", [token]);
-    if (!rows.length) {
-      req.user = null;
-      return next();
-    }
-    req.user = { id: rows[0].user_id, name: rows[0].name, email: rows[0].email, plan: rows[0].plan, token: token };
+    const [rows] = await pool.execute(
+      "SELECT s.token, s.user_id, u.name, u.email, u.plan FROM sessions s JOIN users u ON s.user_id = u.id WHERE s.token = ? AND (s.expires_at IS NULL OR s.expires_at > NOW()) LIMIT 1",
+      [token]
+    );
+    if (!rows.length) { req.user = null; return next(); }
+    req.user = { id: rows[0].user_id, name: rows[0].name, email: rows[0].email, plan: rows[0].plan, token };
     next();
   } catch (err) {
     console.error(err);
@@ -169,7 +161,7 @@ app.post("/api/logout", authMiddleware, async (req, res) => {
   }
 });
 
-// Endpoint: upgrade vers premium (simple toggle)
+// Upgrade
 app.post("/api/upgrade", authMiddleware, async (req, res) => {
   if (!req.user) return res.status(401).json({ ok: false, error: "Non authentifié" });
   try {
@@ -181,7 +173,7 @@ app.post("/api/upgrade", authMiddleware, async (req, res) => {
   }
 });
 
-// Endpoint: clear memory (supprime les mémoires de l'utilisateur)
+// Clear memory
 app.post("/api/clear-memory", authMiddleware, async (req, res) => {
   if (!req.user) return res.status(401).json({ ok: false, error: "Non authentifié" });
   try {
@@ -193,67 +185,44 @@ app.post("/api/clear-memory", authMiddleware, async (req, res) => {
   }
 });
 
-// Helper: push memory
+// Push memory
 async function pushMemory(userId, role, content) {
   await pool.execute("INSERT INTO memories (user_id, role, content) VALUES (?, ?, ?)", [userId, role, content]);
 }
 
-// Get last N messages from memory
+// Get memory
 async function getMemory(userId, limit = 20) {
   const [rows] = await pool.execute("SELECT role, content, created_at FROM memories WHERE user_id = ? ORDER BY id DESC LIMIT ?", [userId, limit]);
-  return rows.reverse(); // plus ancien -> plus récent
+  return rows.reverse();
 }
 
-/**
- * Chat endpoint : envoie la requête au modèle local d'inférence (configurable)
- * Pour simplifier nous appelons un serveur d'inférence local via HTTP (ex: text-generation-inference)
- *
- * Exemplaires d'options :
- * - TEXT_GEN_URL=http://localhost:8080/generate
- * ou
- * - TEXT_GEN_URL=http://localhost:7860/api/predict (selon ton serveur)
- *
- * Le corps envoyé dépend du serveur d'inférence. Ici on suppose une API simple qui accepte:
- * { "prompt": "...", "max_tokens": 512, "temperature": 0.2 }
- */
+// Chat avec Hugging Face Inference
 app.post("/api/chat", authMiddleware, async (req, res) => {
   const { message } = req.body;
   if (!message) return res.status(400).json({ ok: false, error: "Message manquant" });
 
-  // si non authentifié, on autorise quand même mais memory null
   const userId = req.user ? req.user.id : null;
   const isPremium = req.user ? req.user.plan === "premium" : false;
 
   try {
-    // Récupérer mémoire récente si utilisateur connecté
     let memoryText = "";
     if (userId) {
       const mem = await getMemory(userId, 10);
       memoryText = mem.map(m => `${m.role}: ${m.content}`).join("\n");
     }
 
-    // Construire prompt : système + mémoire + user
-    const systemPrefix = `Tu es Mangrat v4omini, assistant utile. Réponds en français. Si l'utilisateur est premium, fournis des réponses plus détaillées.`;
+    const systemPrefix = `Tu es Mangrat v4omini, assistant utile. Réponds en français.`;
     const prompt = `${systemPrefix}\n\nMémoire:\n${memoryText}\n\nUtilisateur: ${message}\n\nRéponse:`;
 
+    // Hugging Face
+    const HF_API_URL = "https://api-inference.huggingface.co/models/gpt2"; // exemple open source
+    const resp = await axios.post(HF_API_URL,
+      { inputs: prompt, parameters: { max_new_tokens: isPremium ? 512 : 200 } },
+      { headers: { Authorization: `Bearer ${process.env.HF_API_KEY}` } }
+    );
 
-    // Paramètres pour l'inférence - ajuste selon ton serveur
-    const genRequest = {
-      prompt,
-      max_tokens: isPremium ? 512 : 200,
-      temperature: isPremium ? 0.2 : 0.1,
-      top_p: 0.95
-    };
+    const aiText = resp.data?.[0]?.generated_text || resp.data?.generated_text || "Erreur génération";
 
-    // Appel au serveur d'inférence local (URL configurable)
-    const TEXT_GEN_URL = process.env.TEXT_GEN_URL || "http://localhost:8080/generate";
-
-    // Exemple pour un serveur qui retourne { generated_text: "..." }
-    const resp = await axios.post(TEXT_GEN_URL, genRequest, { timeout: 120000 });
-    // adapter selon le format de réponse de ton serveur d'inférence
-    const aiText = resp.data.generated_text || resp.data.text || resp.data.output || (resp.data[0] && resp.data[0].text) || JSON.stringify(resp.data);
-
-    // Sauvegarder dans la mémoire si user connecté
     if (userId) {
       await pushMemory(userId, "user", message);
       await pushMemory(userId, "ai", aiText);
