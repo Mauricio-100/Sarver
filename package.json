@@ -2,10 +2,10 @@
   "name": "votre-serveur-projet",
   "version": "1.0.0",
   "description": "Un serveur Node.js avec Express, MySQL et gestion de l'authentification.",
-  "main": "serveur.js",
+  "main": "server.js",
   "type": "module",
   "scripts": {
-    "start": "node serveur.js"
+    "start": "node server.js"
   },
   "dependencies": {
     "axios": "^1.7.2",
