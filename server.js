@@ -20,7 +20,7 @@ app.use(cors({
 app.use(bodyParser.json());
 app.use(cookieParser());
 
-// Connexion MySQL (pool)
+// Connexion MySQL
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
   port: process.env.DB_PORT || 3306,
@@ -31,9 +31,12 @@ const pool = mysql.createPool({
   connectionLimit: 10
 });
 
-// Helper: supprime toutes les anciennes tables
+// Supprime toutes les anciennes tables
 async function dropOldTables() {
-  const tables = ["user_settings","sessions","memories","chat_stats","subscriptions","logs","users"];
+  const tables = [
+    "user_settings","sessions","memories","chat_stats",
+    "subscriptions","logs","friends","users"
+  ];
   for (const table of tables) {
     try {
       await pool.execute(`DROP TABLE IF EXISTS ${table}`);
@@ -44,9 +47,8 @@ async function dropOldTables() {
   }
 }
 
-// Helper: crée toutes les tables
+// Crée toutes les tables nécessaires
 async function ensureTables() {
-  // users en premier
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS users (
       id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -120,12 +122,24 @@ async function ensureTables() {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     )
   `);
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS friends (
+      id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      user_id BIGINT UNSIGNED,
+      friend_id BIGINT UNSIGNED,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (friend_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
 }
 
+// Supprime et recrée les tables
 await dropOldTables().catch(console.error);
 await ensureTables().catch(console.error);
 
-// Endpoint de test DB
+// Endpoint test DB
 app.get("/api/ping", async (req, res) => {
   try {
     const [rows] = await pool.query("SELECT 1 + 1 AS result");
@@ -140,8 +154,10 @@ app.post("/api/register", async (req, res) => {
   const { name, email, password } = req.body;
   if (!name || !email || !password) return res.status(400).json({ ok: false, error: "Champs manquants" });
   try {
-    const [result] = await pool.execute("INSERT INTO users (name, email, password) VALUES (?, ?, ?)", [name, email, password]);
-    // Créer les settings par défaut
+    const [result] = await pool.execute(
+      "INSERT INTO users (name, email, password) VALUES (?, ?, ?)",
+      [name, email, password]
+    );
     await pool.execute("INSERT INTO user_settings (user_id) VALUES (?)", [result.insertId]);
     res.json({ ok: true, userId: result.insertId });
   } catch (err) {
@@ -155,7 +171,10 @@ app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ ok: false, error: "Champs manquants" });
   try {
-    const [rows] = await pool.execute("SELECT id, name, plan FROM users WHERE email = ? AND password = ? LIMIT 1", [email, password]);
+    const [rows] = await pool.execute(
+      "SELECT id, name, plan FROM users WHERE email = ? AND password = ? LIMIT 1",
+      [email, password]
+    );
     if (!rows.length) return res.status(401).json({ ok: false, error: "Email ou mot de passe incorrect" });
     const user = rows[0];
     res.json({ ok: true, user });
@@ -164,20 +183,32 @@ app.post("/api/login", async (req, res) => {
   }
 });
 
-// GPT2 Hugging Face Chat
+// Chat avec Mistral / Mixtral
 app.post("/api/chat", async (req, res) => {
   const { message } = req.body;
   if (!message) return res.status(400).json({ ok: false, error: "Message manquant" });
+
   try {
-    // Appel public Hugging Face GPT2
-    const resp = await axios.post("https://api-inference.huggingface.co/models/gpt2-large", { inputs: message });
-    const aiText = resp.data?.[0]?.generated_text || JSON.stringify(resp.data);
+    const resp = await axios.post(
+      "https://api-inference.huggingface.co/models/mistral/mixtral-7b-instruct-v0.2",
+      { inputs: message },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.HF_TOKEN}`,
+          "Content-Type": "application/json"
+        },
+        timeout: 120000
+      }
+    );
+
+    const aiText = resp.data?.generated_text || JSON.stringify(resp.data);
     res.json({ ok: true, response: aiText });
   } catch (err) {
+    console.error("Erreur modèle Hugging Face:", err?.message || err);
     res.status(500).json({ ok: false, error: "Erreur modèle: " + (err?.message || "unknown") });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`Mangrat backend amélioré en ligne sur le port ${PORT}`);
+  console.log(`Mangrat backend prêt et en ligne sur le port ${PORT}`);
 });
