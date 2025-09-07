@@ -1,3 +1,4 @@
+// server.js
 import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
@@ -19,7 +20,10 @@ app.use(cors({
 app.use(bodyParser.json());
 app.use(cookieParser());
 
-// Connexion MySQL
+// Token Hugging Face
+const HF_TOKEN = process.env.HF_TOKEN;
+
+// Connexion MySQL (pool)
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
   port: process.env.DB_PORT || 3306,
@@ -30,7 +34,7 @@ const pool = mysql.createPool({
   connectionLimit: 10
 });
 
-// Supprime toutes les anciennes tables (sécurisé avec FK)
+// --- Supprime les anciennes tables ---
 async function dropOldTables() {
   const tables = ["user_settings","sessions","memories","chat_stats","subscriptions","logs","friends","users"];
   for (const table of tables) {
@@ -43,7 +47,7 @@ async function dropOldTables() {
   }
 }
 
-// Crée toutes les tables
+// --- Crée toutes les tables ---
 async function ensureTables() {
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS users (
@@ -124,6 +128,7 @@ async function ensureTables() {
       id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
       user_id BIGINT UNSIGNED,
       friend_id BIGINT UNSIGNED,
+      status ENUM('pending','accepted','blocked') DEFAULT 'pending',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
       FOREIGN KEY (friend_id) REFERENCES users(id) ON DELETE CASCADE
@@ -131,11 +136,13 @@ async function ensureTables() {
   `);
 }
 
-// Initialisation
+// --- Initialisation ---
 await dropOldTables().catch(console.error);
 await ensureTables().catch(console.error);
 
-// Test DB
+// --- Endpoints ---
+
+// Ping DB
 app.get("/api/ping", async (req, res) => {
   try {
     const [rows] = await pool.query("SELECT 1+1 AS result");
@@ -151,9 +158,10 @@ app.post("/api/register", async (req, res) => {
   if (!name || !email || !password) return res.status(400).json({ ok: false, error: "Champs manquants" });
   try {
     const [result] = await pool.execute(
-      "INSERT INTO users (name, email, password) VALUES (?, ?, ?)", [name, email, password]
+      "INSERT INTO users (name,email,password) VALUES (?,?,?)",
+      [name,email,password]
     );
-    await pool.execute("INSERT INTO user_settings (user_id) VALUES (?)", [result.insertId]);
+    await pool.execute("INSERT INTO user_settings (user_id) VALUES (?)",[result.insertId]);
     res.json({ ok: true, userId: result.insertId });
   } catch (err) {
     if (err.code === "ER_DUP_ENTRY") return res.status(409).json({ ok: false, error: "Email déjà utilisé" });
@@ -162,71 +170,44 @@ app.post("/api/register", async (req, res) => {
 });
 
 // Login
-app.post("/api/login", async (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password) return res.status(400).json({ ok: false, error: "Champs manquants" });
-  try {
-    const [rows] = await pool.execute(
-      "SELECT id, name, plan FROM users WHERE email = ? AND password = ? LIMIT 1", [email, password]
+app.post("/api/login", async (req,res)=>{
+  const {email,password}=req.body;
+  if(!email||!password) return res.status(400).json({ok:false,error:"Champs manquants"});
+  try{
+    const [rows]=await pool.execute(
+      "SELECT id,name,plan FROM users WHERE email=? AND password=? LIMIT 1",
+      [email,password]
     );
-    if (!rows.length) return res.status(401).json({ ok: false, error: "Email ou mot de passe incorrect" });
-    const user = rows[0];
-    res.json({ ok: true, user });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
+    if(!rows.length) return res.status(401).json({ok:false,error:"Email ou mot de passe incorrect"});
+    res.json({ok:true,user:rows[0]});
+  }catch(err){
+    res.status(500).json({ok:false,error:err.message});
   }
 });
 
-// Chat avec Mistral Mixtral
-app.post("/api/chat", async (req, res) => {
-  const { message } = req.body;
-  if (!message) return res.status(400).json({ ok: false, error: "Message manquant" });
-
-  try {
-    const resp = await axios.post(
-      "https://api-inference.huggingface.co/models/mistralai/Mixtral-8x7B-Instruct-v0.1",
-      { inputs: message },
+// Chat GPT Mistral
+app.post("/api/chat", async (req,res)=>{
+  const {message}=req.body;
+  if(!message) return res.status(400).json({ok:false,error:"Message manquant"});
+  try{
+    const resp=await axios.post(
+      "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2",
+      {inputs: message},
       {
         headers: {
-          "Authorization": `Bearer ${process.env.HF_TOKEN}`,
+          Authorization: `Bearer ${HF_TOKEN}`,
           "Content-Type": "application/json"
         },
         timeout: 120000
       }
     );
-
-    const aiText = resp.data?.[0]?.generated_text || JSON.stringify(resp.data);
-    res.json({ ok: true, response: aiText });
-
-    // Optionnel: sauvegarder mémoire
-    // await pool.execute("INSERT INTO memories (user_id, role, content) VALUES (?, 'ai', ?)", [userId, aiText]);
-
-  } catch (err) {
-    res.status(500).json({ ok: false, error: "Erreur modèle: " + (err.message || "unknown") });
+    const aiText=resp.data?.[0]?.generated_text||JSON.stringify(resp.data);
+    res.json({ok:true,response:aiText});
+  }catch(err){
+    console.error(err.response?.data || err.message);
+    res.status(500).json({ok:false,error:"Erreur modèle: "+(err?.message||"unknown")});
   }
 });
 
-// GET memories
-app.get("/api/memories", async (req, res) => {
-  try {
-    const [rows] = await pool.query("SELECT * FROM memories ORDER BY created_at DESC LIMIT 100");
-    res.json({ ok: true, memories: rows });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// GET chat_stats
-app.get("/api/chat_stats", async (req, res) => {
-  try {
-    const [rows] = await pool.query("SELECT * FROM chat_stats ORDER BY created_at DESC LIMIT 100");
-    res.json({ ok: true, chat_stats: rows });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// Start server
-app.listen(PORT, () => {
-  console.log(`Mangrat backend prêt et en ligne sur le port ${PORT}`);
-});
+// Démarrage serveur
+app.listen(PORT,()=>console.log(`Mangrat backend prêt et en ligne sur le port ${PORT}`));
