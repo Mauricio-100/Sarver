@@ -1,3 +1,4 @@
+// server.js
 import express from "express";
 import cors from "cors";
 import bodyParser from "body-parser";
@@ -5,13 +6,29 @@ import cookieParser from "cookie-parser";
 import mysql from "mysql2/promise";
 import dotenv from "dotenv";
 import axios from "axios";
+import path from "path";
+import { fileURLToPath } from "url";
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// === Middleware ===
+// --- Gestion du chemin pour frontend ---
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Servir les fichiers statiques du frontend
+app.use(express.static(path.join(__dirname, "frontend")));
+
+// Toutes les routes non API redirigent vers index.html
+app.get("*", (req, res) => {
+  if (!req.path.startsWith("/api")) {
+    res.sendFile(path.join(__dirname, "frontend", "index.html"));
+  }
+});
+
+// --- Middleware ---
 app.use(cors({
   origin: process.env.FRONTEND_ORIGIN || "http://localhost:5500",
   credentials: true
@@ -19,20 +36,18 @@ app.use(cors({
 app.use(bodyParser.json());
 app.use(cookieParser());
 
-// === Connexion MySQL robuste ===
+// --- Connexion MySQL ---
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
   port: process.env.DB_PORT || 3306,
   user: process.env.DB_USER,
   password: process.env.DB_PASS,
   database: process.env.DB_NAME,
-  ssl: process.env.DB_SSL === "true" ? { rejectUnauthorized: false } : undefined,
-  waitForConnections: true,
-  connectionLimit: 10,
-  connectTimeout: 20000 // 20s
+  ssl: process.env.DB_SSL === "true" ? { rejectUnauthorized: false } : false,
+  connectionLimit: 10
 });
 
-// === Création des tables minimales ===
+// --- Création des tables si elles n'existent pas ---
 async function ensureTables() {
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS users (
@@ -54,10 +69,78 @@ async function ensureTables() {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     )
   `);
-}
-await ensureTables().catch(err => console.error("Erreur tables:", err.message));
 
-// === Endpoint de test DB ===
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS sessions (
+      token VARCHAR(64) PRIMARY KEY,
+      user_id BIGINT UNSIGNED,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      expires_at DATETIME,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS memories (
+      id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      user_id BIGINT UNSIGNED,
+      role ENUM('user','ai'),
+      content TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS chat_stats (
+      id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      user_id BIGINT UNSIGNED,
+      tokens_used INT DEFAULT 0,
+      messages_sent INT DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS subscriptions (
+      id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      user_id BIGINT UNSIGNED,
+      plan ENUM('basic','premium') DEFAULT 'basic',
+      started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      expires_at DATETIME,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS logs (
+      id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      user_id BIGINT UNSIGNED,
+      action VARCHAR(255),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS friends (
+      id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      user_id BIGINT UNSIGNED,
+      friend_id BIGINT UNSIGNED,
+      status ENUM('pending','accepted','blocked') DEFAULT 'pending',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (friend_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+}
+
+await ensureTables().catch(console.error);
+
+// --- Endpoints API ---
+
+// Test DB
 app.get("/api/ping", async (req, res) => {
   try {
     const [rows] = await pool.query("SELECT 1 + 1 AS result");
@@ -67,58 +150,46 @@ app.get("/api/ping", async (req, res) => {
   }
 });
 
-// === Register ===
+// Register
 app.post("/api/register", async (req, res) => {
   const { name, email, password } = req.body;
-  if (!name || !email || !password) {
-    return res.status(400).json({ ok: false, error: "Champs manquants" });
-  }
+  if (!name || !email || !password) return res.status(400).json({ ok: false, error: "Champs manquants" });
   try {
-    const [result] = await pool.execute(
-      "INSERT INTO users (name, email, password) VALUES (?, ?, ?)",
-      [name, email, password]
-    );
+    const [result] = await pool.execute("INSERT INTO users (name, email, password) VALUES (?, ?, ?)", [name, email, password]);
     await pool.execute("INSERT INTO user_settings (user_id) VALUES (?)", [result.insertId]);
     res.json({ ok: true, userId: result.insertId });
   } catch (err) {
-    if (err.code === "ER_DUP_ENTRY") {
-      return res.status(409).json({ ok: false, error: "Email déjà utilisé" });
-    }
+    if (err.code === "ER_DUP_ENTRY") return res.status(409).json({ ok: false, error: "Email déjà utilisé" });
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// === Login ===
+// Login
 app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
-  if (!email || !password) {
-    return res.status(400).json({ ok: false, error: "Champs manquants" });
-  }
+  if (!email || !password) return res.status(400).json({ ok: false, error: "Champs manquants" });
   try {
-    const [rows] = await pool.execute(
-      "SELECT id, name, plan FROM users WHERE email = ? AND password = ? LIMIT 1",
-      [email, password]
-    );
-    if (!rows.length) {
-      return res.status(401).json({ ok: false, error: "Email ou mot de passe incorrect" });
-    }
-    res.json({ ok: true, user: rows[0] });
+    const [rows] = await pool.execute("SELECT id, name, plan FROM users WHERE email = ? AND password = ? LIMIT 1", [email, password]);
+    if (!rows.length) return res.status(401).json({ ok: false, error: "Email ou mot de passe incorrect" });
+    const user = rows[0];
+    res.json({ ok: true, user });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// === Chat avec HuggingFace ===
+// GPT Chat
 app.post("/api/chat", async (req, res) => {
   const { message } = req.body;
-  if (!message) {
-    return res.status(400).json({ ok: false, error: "Message manquant" });
-  }
+  if (!message) return res.status(400).json({ ok: false, error: "Message manquant" });
   try {
     const resp = await axios.post(
       "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2",
       { inputs: message },
-      { headers: { Authorization: `Bearer ${process.env.HF_TOKEN}` }, timeout: 120000 }
+      {
+        headers: { Authorization: `Bearer ${process.env.HF_TOKEN}` },
+        timeout: 120000
+      }
     );
     const aiText = resp.data?.generated_text || JSON.stringify(resp.data);
     res.json({ ok: true, response: aiText });
@@ -127,6 +198,7 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
+// --- Serveur ---
 app.listen(PORT, () => {
-  console.log(`✅ Serveur en ligne sur http://localhost:${PORT}`);
+  console.log(`Mangrat backend prêt et en ligne sur le port ${PORT}`);
 });
