@@ -1,6 +1,6 @@
 /**
- * server.js
- * Backend Mangrat v4omini avec Hugging Face GPT2 large public
+ * server.js - Backend Mangrat v4omini amélioré
+ * Utilise GPT2 large public Hugging Face
  */
 
 import express from "express";
@@ -36,19 +36,19 @@ const pool = mysql.createPool({
   connectionLimit: 10
 });
 
-// Test DB
+// Ping DB
 app.get("/api/ping", async (req, res) => {
   try {
-    const [rows] = await pool.query("SELECT 1 + 1 AS result");
+    const [rows] = await pool.query("SELECT 1+1 AS result");
     res.json({ ok: true, db: rows[0].result });
   } catch (err) {
-    console.error(err);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// Créer tables
+// Créer toutes les tables nécessaires
 async function ensureTables() {
+  // Users
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS users (
       id BIGINT PRIMARY KEY AUTO_INCREMENT,
@@ -60,28 +60,81 @@ async function ensureTables() {
     )
   `);
 
+  // Sessions
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS sessions (
       token VARCHAR(64) PRIMARY KEY,
       user_id BIGINT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      expires_at DATETIME
+      expires_at DATETIME,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     )
   `);
 
+  // Memories
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS memories (
       id BIGINT PRIMARY KEY AUTO_INCREMENT,
       user_id BIGINT,
       role ENUM('user','ai'),
       content TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  // User settings
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS user_settings (
+      user_id BIGINT PRIMARY KEY,
+      theme ENUM('light','dark') DEFAULT 'dark',
+      notifications BOOLEAN DEFAULT TRUE,
+      language VARCHAR(10) DEFAULT 'fr',
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  // Chat statistics
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS chat_stats (
+      id BIGINT PRIMARY KEY AUTO_INCREMENT,
+      user_id BIGINT,
+      messages_sent INT DEFAULT 0,
+      messages_received INT DEFAULT 0,
+      last_active DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  // Subscriptions / payments (facultatif pour futur paywall)
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS subscriptions (
+      id BIGINT PRIMARY KEY AUTO_INCREMENT,
+      user_id BIGINT,
+      type ENUM('monthly','yearly') DEFAULT 'monthly',
+      status ENUM('active','inactive') DEFAULT 'inactive',
+      started_at DATETIME,
+      expires_at DATETIME,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+
+  // Logs pour audit et erreurs
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS logs (
+      id BIGINT PRIMARY KEY AUTO_INCREMENT,
+      type ENUM('error','info','warn') DEFAULT 'info',
+      message TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  console.log("Toutes les tables sont vérifiées/créées ✅");
 }
+
 ensureTables().catch(console.error);
 
-// Auth - register
+// --- AUTH REGISTER ---
 app.post("/api/register", async (req, res) => {
   const { name, email, password } = req.body;
   if (!name || !email || !password) return res.status(400).json({ ok: false, error: "Champs manquants" });
@@ -91,6 +144,8 @@ app.post("/api/register", async (req, res) => {
       "INSERT INTO users (name, email, password) VALUES (?, ?, ?)",
       [name, email, password]
     );
+    // créer settings par défaut
+    await pool.execute("INSERT INTO user_settings (user_id) VALUES (?)", [result.insertId]);
     res.json({ ok: true, userId: result.insertId });
   } catch (err) {
     if (err.code === "ER_DUP_ENTRY") return res.status(409).json({ ok: false, error: "Email déjà utilisé" });
@@ -99,7 +154,7 @@ app.post("/api/register", async (req, res) => {
   }
 });
 
-// Login
+// --- AUTH LOGIN ---
 app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ ok: false, error: "Champs manquants" });
@@ -113,27 +168,32 @@ app.post("/api/login", async (req, res) => {
 
     const user = rows[0];
     const token = uuidv4();
-    const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 7); // 7 jours
+    const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 7);
     await pool.execute("INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)", [token, user.id, expiresAt]);
 
     res.cookie("mangrat_token", token, { httpOnly: true, maxAge: 1000 * 60 * 60 * 24 * 7 });
-    res.json({ ok: true, user: { id: user.id, name: user.name, plan: user.plan } });
+    res.json({ ok: true, user: { id: user.id, name: user.name, plan: user.plan }, token });
   } catch (err) {
     console.error(err);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// Middleware auth
+// --- AUTH MIDDLEWARE ---
 async function authMiddleware(req, res, next) {
   const token = req.cookies?.mangrat_token || req.headers["x-session-token"];
   if (!token) { req.user = null; return next(); }
+
   try {
     const [rows] = await pool.execute(
-      "SELECT s.token, s.user_id, u.name, u.email, u.plan FROM sessions s JOIN users u ON s.user_id = u.id WHERE s.token = ? AND (s.expires_at IS NULL OR s.expires_at > NOW()) LIMIT 1",
+      `SELECT s.token, s.user_id, u.name, u.email, u.plan
+       FROM sessions s JOIN users u ON s.user_id = u.id
+       WHERE s.token = ? AND (s.expires_at IS NULL OR s.expires_at > NOW())
+       LIMIT 1`,
       [token]
     );
     if (!rows.length) { req.user = null; return next(); }
+
     req.user = { id: rows[0].user_id, name: rows[0].name, email: rows[0].email, plan: rows[0].plan, token };
     next();
   } catch (err) {
@@ -143,7 +203,7 @@ async function authMiddleware(req, res, next) {
   }
 }
 
-// Logout
+// --- LOGOUT ---
 app.post("/api/logout", authMiddleware, async (req, res) => {
   try {
     const token = req.cookies?.mangrat_token || req.headers["x-session-token"];
@@ -158,7 +218,7 @@ app.post("/api/logout", authMiddleware, async (req, res) => {
   }
 });
 
-// Upgrade
+// --- UPGRADE ---
 app.post("/api/upgrade", authMiddleware, async (req, res) => {
   if (!req.user) return res.status(401).json({ ok: false, error: "Non authentifié" });
   try {
@@ -170,7 +230,16 @@ app.post("/api/upgrade", authMiddleware, async (req, res) => {
   }
 });
 
-// Clear memory
+// --- MEMORY ---
+async function pushMemory(userId, role, content) {
+  await pool.execute("INSERT INTO memories (user_id, role, content) VALUES (?, ?, ?)", [userId, role, content]);
+}
+
+async function getMemory(userId, limit = 20) {
+  const [rows] = await pool.execute("SELECT role, content, created_at FROM memories WHERE user_id = ? ORDER BY id DESC LIMIT ?", [userId, limit]);
+  return rows.reverse();
+}
+
 app.post("/api/clear-memory", authMiddleware, async (req, res) => {
   if (!req.user) return res.status(401).json({ ok: false, error: "Non authentifié" });
   try {
@@ -182,18 +251,7 @@ app.post("/api/clear-memory", authMiddleware, async (req, res) => {
   }
 });
 
-// Push memory
-async function pushMemory(userId, role, content) {
-  await pool.execute("INSERT INTO memories (user_id, role, content) VALUES (?, ?, ?)", [userId, role, content]);
-}
-
-// Get memory
-async function getMemory(userId, limit = 20) {
-  const [rows] = await pool.execute("SELECT role, content, created_at FROM memories WHERE user_id = ? ORDER BY id DESC LIMIT ?", [userId, limit]);
-  return rows.reverse();
-}
-
-// Chat avec GPT2 large public
+// --- CHAT GPT2 PUBLIC ---
 app.post("/api/chat", authMiddleware, async (req, res) => {
   const { message } = req.body;
   if (!message) return res.status(400).json({ ok: false, error: "Message manquant" });
@@ -211,7 +269,6 @@ app.post("/api/chat", authMiddleware, async (req, res) => {
     const systemPrefix = `Tu es Mangrat v4omini, assistant utile. Réponds en français.`;
     const prompt = `${systemPrefix}\n\nMémoire:\n${memoryText}\n\nUtilisateur: ${message}\n\nRéponse:`;
 
-    // Hugging Face GPT2 large public
     const HF_PUBLIC_URL = "https://transformer.huggingface.co/doc/gpt2-large";
     const resp = await axios.post(HF_PUBLIC_URL, { inputs: prompt });
     const aiText = resp.data?.generated_text || "Erreur génération";
@@ -219,6 +276,15 @@ app.post("/api/chat", authMiddleware, async (req, res) => {
     if (userId) {
       await pushMemory(userId, "user", message);
       await pushMemory(userId, "ai", aiText);
+      // Mettre à jour stats chat
+      await pool.execute(`
+        INSERT INTO chat_stats (user_id, messages_sent, messages_received)
+        VALUES (?, 1, 1)
+        ON DUPLICATE KEY UPDATE
+        messages_sent = messages_sent + 1,
+        messages_received = messages_received + 1,
+        last_active = NOW()
+      `, [userId]);
     }
 
     res.json({ ok: true, response: aiText });
@@ -229,5 +295,5 @@ app.post("/api/chat", authMiddleware, async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Mangrat backend running on port ${PORT}`);
+  console.log(`Mangrat backend amélioré en ligne sur port ${PORT}`);
 });
