@@ -1,6 +1,6 @@
 /**
  * server.js
- * Backend minimal pour Mangrat v4omini avec Hugging Face
+ * Backend Mangrat v4omini avec Hugging Face GPT2 large public
  */
 
 import express from "express";
@@ -47,7 +47,7 @@ app.get("/api/ping", async (req, res) => {
   }
 });
 
-// Créer les tables si elles n'existent pas
+// Créer tables
 async function ensureTables() {
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS users (
@@ -127,10 +127,7 @@ app.post("/api/login", async (req, res) => {
 // Middleware auth
 async function authMiddleware(req, res, next) {
   const token = req.cookies?.mangrat_token || req.headers["x-session-token"];
-  if (!token) {
-    req.user = null;
-    return next();
-  }
+  if (!token) { req.user = null; return next(); }
   try {
     const [rows] = await pool.execute(
       "SELECT s.token, s.user_id, u.name, u.email, u.plan FROM sessions s JOIN users u ON s.user_id = u.id WHERE s.token = ? AND (s.expires_at IS NULL OR s.expires_at > NOW()) LIMIT 1",
@@ -196,7 +193,7 @@ async function getMemory(userId, limit = 20) {
   return rows.reverse();
 }
 
-// Chat avec Hugging Face Inference
+// Chat avec GPT2 large public
 app.post("/api/chat", authMiddleware, async (req, res) => {
   const { message } = req.body;
   if (!message) return res.status(400).json({ ok: false, error: "Message manquant" });
@@ -214,14 +211,10 @@ app.post("/api/chat", authMiddleware, async (req, res) => {
     const systemPrefix = `Tu es Mangrat v4omini, assistant utile. Réponds en français.`;
     const prompt = `${systemPrefix}\n\nMémoire:\n${memoryText}\n\nUtilisateur: ${message}\n\nRéponse:`;
 
-    // Hugging Face
-    const HF_API_URL = "https://api-inference.huggingface.co/models/gpt2"; // exemple open source
-    const resp = await axios.post(HF_API_URL,
-      { inputs: prompt, parameters: { max_new_tokens: isPremium ? 512 : 200 } },
-      { headers: { Authorization: `Bearer ${process.env.HF_API_KEY}` } }
-    );
-
-    const aiText = resp.data?.[0]?.generated_text || resp.data?.generated_text || "Erreur génération";
+    // Hugging Face GPT2 large public
+    const HF_PUBLIC_URL = "https://transformer.huggingface.co/doc/gpt2-large";
+    const resp = await axios.post(HF_PUBLIC_URL, { inputs: prompt });
+    const aiText = resp.data?.generated_text || "Erreur génération";
 
     if (userId) {
       await pushMemory(userId, "user", message);
